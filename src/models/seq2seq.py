@@ -22,7 +22,24 @@ class CNNEncoder(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         features = self.features(images)
+        features = features + self._position_encoding(features)
         return features.flatten(2).transpose(1, 2)
+
+    @staticmethod
+    def _position_encoding(features: torch.Tensor) -> torch.Tensor:
+        _, channels, height, width = features.shape
+        device, dtype = features.device, features.dtype
+        rows = torch.linspace(-1, 1, height, device=device, dtype=dtype)
+        columns = torch.linspace(-1, 1, width, device=device, dtype=dtype)
+        channel_ids = torch.arange(channels, device=device)
+        axes = (channel_ids // 2) % 2
+        frequencies = channel_ids // 4
+        scales = torch.exp(-math.log(10000) * frequencies.to(dtype) / max(channels // 4, 1))
+        row_grid = rows[:, None].expand(height, width)
+        column_grid = columns[None, :].expand(height, width)
+        coordinates = torch.where(axes[:, None, None] == 0, row_grid[None], column_grid[None])
+        angles = coordinates * scales[:, None, None] * math.pi
+        return torch.where(channel_ids[:, None, None] % 2 == 0, angles.sin(), angles.cos()).unsqueeze(0) * 0.1
 
 
 class ImageToLatex(nn.Module):

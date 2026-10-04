@@ -16,6 +16,7 @@ ENV/
 
 # Generated training artifacts
 /data/synthetic/
+/data/formula_synthetic/
 /checkpoints/
 
 # Generated documents and build artifacts
