@@ -18,7 +18,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .data.dataset import LatexImageDataset, collate_batch
+from .data.dataset import LatexImageDataset, collate_batch, split_annotation
 from .data.tokenizer import LatexTokenizer
 from .models.seq2seq import ImageToLatex
 
@@ -124,7 +124,7 @@ def validate_checkpoint_compatibility(
 def fingerprint_dataset(data_dir: Path) -> str:
     digest = hashlib.sha256()
     for split in ("train", "val"):
-        annotation_path = data_dir / f"{split}.jsonl"
+        annotation_path = split_annotation(data_dir, split)
         annotation_bytes = annotation_path.read_bytes()
         digest.update(split.encode("utf-8"))
         digest.update(annotation_bytes)
@@ -134,7 +134,7 @@ def fingerprint_dataset(data_dir: Path) -> str:
             row = json.loads(line)
             image_path = Path(row["image"])
             if not image_path.is_absolute():
-                image_path = data_dir / image_path
+                image_path = annotation_path.parent / image_path
             stat = image_path.stat()
             digest.update(str(image_path).encode("utf-8"))
             digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
@@ -230,7 +230,7 @@ def evaluate_model(model, loader, tokenizer, device) -> tuple[float, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/baseline.yaml")
+    parser.add_argument("--config", default="configs/data_v2.yaml")
     parser.add_argument("--device", help="Override the configured device (for example, cuda or cuda:0)")
     parser.add_argument("--checkpoint", help="Output best-checkpoint path (use a new path for each experiment)")
     parser.add_argument("--epochs", type=int, help="Override the total epoch limit from the config")
@@ -264,19 +264,19 @@ def main() -> None:
     set_seed(int(config["seed"]))
     data_dir = Path(config["data_dir"])
     data_fingerprint = fingerprint_dataset(data_dir)
-    records = [json.loads(line) for line in (data_dir / "train.jsonl").read_text().splitlines() if line]
+    records = [json.loads(line) for line in (split_annotation(data_dir, "train")).read_text().splitlines() if line]
     if not records:
-        raise ValueError(f"Training split is empty: {data_dir / 'train.jsonl'}")
+        raise ValueError(f"Training split is empty: {split_annotation(data_dir, 'train')}")
     tokenizer = LatexTokenizer(char for row in records for char in row["latex"])
     dataset_args = {"tokenizer": tokenizer, "image_size": config["image_size"], "max_length": config["max_length"]}
     train_set = LatexImageDataset(
-        data_dir / "train.jsonl",
+        split_annotation(data_dir, "train"),
         **dataset_args,
         augment=bool(config.get("train_augmentation", False)),
     )
-    val_set = LatexImageDataset(data_dir / "val.jsonl", **dataset_args)
+    val_set = LatexImageDataset(split_annotation(data_dir, "val"), **dataset_args)
     if not val_set:
-        raise ValueError(f"Validation split is empty: {data_dir / 'val.jsonl'}")
+        raise ValueError(f"Validation split is empty: {split_annotation(data_dir, 'val')}")
 
     def collate(batch):
         return collate_batch(batch, tokenizer.pad_id)

@@ -20,22 +20,64 @@ def test_dataset_loads(tmp_path):
 
 
 def test_generated_splits_have_unique_varied_examples(tmp_path):
-    generate(num=30, out=tmp_path, seed=17, image_size=96)
+    manifest = generate(num=120, out=tmp_path, seed=17, image_size=192, renderer="mathtext", variants=2)
     splits = {}
     for split in ("train", "val", "test"):
-        annotation = tmp_path / f"{split}.jsonl"
+        annotation = tmp_path / split / "annotations.jsonl"
         splits[split] = [json.loads(line) for line in annotation.read_text().splitlines()]
+        assert len(splits[split]) == manifest["counts"][split]
+        for row in splits[split]:
+            assert (annotation.parent / row["image"]).is_file()
+    for field in ("latex", "group_id", "pixel_sha256", "font"):
+        values = [{row[field] for row in rows} for rows in splits.values()]
+        assert all(values[i].isdisjoint(values[j]) for i in range(3) for j in range(i+1, 3))
+    assert manifest["complete"]
+    assert not any(manifest["unseen_target_characters"].values())
+    from src.data.audit import audit_dataset
+    assert audit_dataset(tmp_path)["verified_images"] == 120
+    from src.train import fingerprint_dataset
+    assert len(fingerprint_dataset(tmp_path)) == 64
+    from src.data.dataset import split_annotation
+    tokenizer = LatexTokenizer(char for row in splits["train"] for char in row["latex"])
+    for split in splits:
+        dataset = LatexImageDataset(split_annotation(tmp_path, split), tokenizer, (128,384), 256)
+        assert dataset[0]["image"].shape == (3,128,384)
+    import pytest
+    with pytest.raises(FileExistsError):
+        generate(120, tmp_path, renderer="mathtext")
+    # A changed or corrupted image must be detected before training.
+    changed = tmp_path / "train" / splits["train"][0]["image"]
+    Image.new("RGB", (20, 20), "black").save(changed)
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        audit_dataset(tmp_path)
 
-    latex_sets = [{row["latex"] for row in rows} for rows in splits.values()]
-    assert all(latex_sets[i].isdisjoint(latex_sets[j]) for i in range(3) for j in range(i + 1, 3))
-    all_latex = [row["latex"] for rows in splits.values() for row in rows]
-    assert len(all_latex) == len(set(all_latex)) == 30
-    formulas = {re.search(r"\$(.*?)\$", text).group(1) for text in all_latex}
-    assert len(formulas) == 30
-    assert all(text.startswith("$") and text.endswith("$") for text in all_latex)
-    assert len({re.search(r"\\[A-Za-z]+", text).group(0) for text in all_latex if re.search(r"\\[A-Za-z]+", text)}) > 5
-    with Image.open(tmp_path / splits["train"][0]["image"]) as image:
-        assert image.size == (96, 64)
+
+def test_structural_split_and_audit():
+    from src.data.generate_synthetic import assign_split, audit_records, composed_formula
+    import random
+    import pytest
+    assert assign_split("frac(atom,atom)", 42) == assign_split("frac(atom,atom)", 42)
+    first = [composed_formula(random.Random(seed), 3) for seed in range(20)]
+    second = [composed_formula(random.Random(seed), 3) for seed in range(20)]
+    assert first == second
+    row = {"group_id":"same", "latex":"x", "pixel_sha256":"pixels"}
+    with pytest.raises(ValueError, match="Cross-split leakage"):
+        audit_records({"train":[row], "val":[row]})
+
+
+def test_split_resolver_prefers_new_layout_and_rejects_incomplete(tmp_path):
+    from src.data.dataset import split_annotation
+    import pytest
+    old = tmp_path / "train.jsonl"
+    old.write_text("")
+    assert split_annotation(tmp_path, "train") == old
+    modern = tmp_path / "train" / "annotations.jsonl"
+    modern.parent.mkdir()
+    modern.write_text("")
+    assert split_annotation(tmp_path, "train") == modern
+    (tmp_path / "manifest.json").write_text('{"complete": false}')
+    with pytest.raises(ValueError, match="incomplete"):
+        split_annotation(tmp_path, "train")
 
 
 def test_preprocessing_preserves_aspect_ratio_and_pads():

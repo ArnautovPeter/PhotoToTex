@@ -1,67 +1,128 @@
-# Photo-to-LaTeX baseline
+# PhotoToTex · Formula workbench
 
-This repository contains an offline baseline for recognizing a cropped,
-typeset formula image as LaTeX. It is an experimental recognizer, not a
-ready-made OCR system for arbitrary photographs or handwriting.
+![PhotoToTex workbench](assets/workbench.jpg)
 
-## Install
+## Learning notes and architecture review
+
+See [the architecture review](docs/architecture_review.md) for a Russian-language
+explanation of the current model, its limitations, pretrained-model candidates,
+and the proposed experiment plan. [The learning log](docs/learning_log.md)
+records decisions and distinguishes proposed work from completed experiments.
+See [the web and career stack review](docs/web_and_career_stack.md) for the
+proposed API architecture and a staged technology plan for junior DS/ML/DE roles.
+
+A local FastAPI workbench for recognizing cropped formulas with pretrained
+pix2tex and comparing it with a small educational CNN/Transformer baseline.
+Inspect the rendered formula, edit LaTeX and export the result. Full-page
+layout detection is not included. Recognition quality must be checked on your
+own photographs; neither backend guarantees handwriting support.
+
+## Install and run with uv
+
+Python 3.11 and dependencies are managed by `uv`; activation and pip are not
+needed. Choose the CPU or CUDA 12.4 extra consistently when syncing and running:
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+uv sync --frozen --extra cpu
+uv run --frozen --extra cpu python -m src.download_models
+uv run --frozen --extra cpu python -m src.web_app
 ```
+
+Open <http://127.0.0.1:8000>. Official pix2tex weights are downloaded once into
+`checkpoints/pix2tex`; recognition then runs locally. The frontend includes
+local KaTeX assets and needs no CDN. Upload one cropped formula, select pix2tex
+or the retained baseline, inspect/edit the rendered result and copy/download
+LaTeX. `/docs` documents the API. Baseline metrics are labelled separately.
+
+For the existing NVIDIA setup, use `--extra cu124` instead of `--extra cpu`;
+add `--device cuda:0` to the web CLI when a working GPU is available. These extras
+are mutually exclusive. `uv` still creates a project `.venv`, but manages it
+from `pyproject.toml` and `uv.lock`. Commit both files; add dependencies with
+`uv add`, then update the lock deliberately rather than installing with pip.
+
+```bash
+uv run --frozen --extra cpu pytest -q
+```
+
+Ruff checks Python code and import ordering using the project configuration:
+
+```bash
+uv run --frozen --extra cpu ruff check .
+```
+
+With Ruff installed on your PATH (`uv tool install ruff==0.17.2`), you can also
+run `ruff check .`, `ruff check . --fix`, or `ruff format .` directly. Run from
+the project root to check the whole project, or pass a file/directory to limit
+the scope.
+
+Docker uses the same lock and the CPU extra:
+
+```bash
+docker compose up --build
+```
+
+Run the weight-download command on the host first; Compose mounts `checkpoints`
+and `data`. Models and datasets are excluded from the Docker image and Git.
 
 ## Generate data
 
-The generator is deterministic for a given seed and needs no network or API.
-It generates standalone formulas from multiple structures, renders them with
-varied math fonts and paper-like image effects, and puts unique formulas into
-train, validation, and test splits:
+The v2 generator composes nested expressions, renders with real TeX, and creates
+physical `train/`, `val/`, and `test/` folders. Each contains its own `images/`
+and `annotations.jsonl`; image paths are relative to that split's annotation.
+All variants and matching expression-tree structures stay in one split.
+Validation/test also use held-out fonts. This measures a combined structural
+and style shift, not real-photo accuracy.
 
 ```bash
-python -m src.data.generate_synthetic --num 5000 --out data/formula_synthetic --seed 42
+uv run --frozen --extra cpu python -m src.data.generate_synthetic --num 5000 --out data/formula_v2 --seed 42
+uv run --frozen --extra cpu python -m src.data.audit data/formula_v2
 ```
 
-Each split is JSONL with `id`, relative `image`, and `latex` fields. The
-generated images are wide crops, not full documents. Synthetic font and
-photometric variation help with robustness, but do not substitute for labeled
-real photographs or handwritten examples.
+TeX rendering requires system `pdflatex`, `standalone`, `amsmath`, `amssymb`,
+`newtxmath`, `mathpazo`, `eulervm`, and `pdftoppm`. There is no silent fallback;
+`--renderer mathtext` explicitly selects a smaller grammar for lightweight tests.
+Output must be empty to avoid mixing dataset versions. Generation writes a
+manifest and marks interrupted datasets incomplete. `--num` counts images;
+by default each formula has up to two capture variants.
+
+See [the data protocol](docs/data_pipeline.md) for split rules, limitations,
+reproduction and independent real validation. Existing old datasets remain
+supported by the loader for old experiments.
 
 ## Train, infer, and evaluate
 
-Generate the training data first; the default config expects it under
-`data/formula_synthetic`:
+The prepared v2 dataset is under `data/formula_v2`. Audit it before training;
+if generating a replacement, use a new empty output directory. Training defaults
+to `configs/data_v2.yaml`:
 
 ```bash
-python -m src.data.generate_synthetic --num 5000 --out data/formula_synthetic --seed 42
-python -m src.train --config configs/baseline.yaml --checkpoint checkpoints/runs/formula-v2/best.pt
-python -m src.infer --checkpoint checkpoints/runs/formula-v2/best.pt --image data/formula_synthetic/images/000000.png
-python -m src.evaluate --checkpoint checkpoints/runs/formula-v2/best.pt --split test
+uv run --frozen --extra cpu python -m src.data.audit data/formula_v2
+uv run --frozen --extra cu124 python -m src.train --config configs/data_v2.yaml --checkpoint checkpoints/runs/formula-v2/best.pt
+uv run --frozen --extra cpu python -m src.infer --checkpoint checkpoints/runs/formula-v2/best.pt --image data/formula_v2/train/images/train-000000.png
+uv run --frozen --extra cpu python -m src.evaluate --checkpoint checkpoints/runs/formula-v2/best.pt --split test
 ```
 
 The model now preserves image aspect ratio on a 128x384 canvas and adds 2D
 spatial position information to its CNN features. Training reports validation
 character error rate (CER) and exact match every epoch, saves the best
 validation checkpoint, reduces the learning rate when validation stalls, and
-stops early rather than selecting by training loss. Existing checkpoints were
-trained with the old 64x64 preprocessing and small dataset; regenerate the
-data and retrain before using the updated interface.
+stops early rather than selecting by training loss. Retained checkpoints use the earlier synthetic dataset and a 128x384 canvas.
+They remain useful for comparison, but are not compatible with the v2 tokenizer
+and sequence limit. Start a fresh run for the new dataset.
 
 Training is configured to require CUDA and will stop with an error rather than
 silently falling back to CPU. To select a particular GPU, pass for example
 `--device cuda:0`. The installed PyTorch CUDA runtime must be compatible with
 the NVIDIA driver. On Linux, check `nvidia-smi` and `torch.version.cuda`; for
 example, with a CUDA 12.4-capable driver, reinstall a matching PyTorch build
-inside the active virtual environment:
+through the CUDA extra:
 
 ```bash
-python -m pip uninstall -y torch torchvision
-python -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
-python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
+uv sync --frozen --extra cu124
+uv run --frozen --extra cu124 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
-Only start training when that last command reports `True` and the GPU name.
+Only start training when that last command reports `True`.
 The default config uses four CPU data-loader workers to prepare camera-like
 augmentations in parallel while CUDA trains. Set `num_workers: 0` in the
 config if your platform does not support worker processes.
@@ -71,10 +132,11 @@ config if your platform does not support worker processes.
 Use a warm start to keep only the learned weights and begin a new optimization
 run. The tokenizer and model settings (including image size) must exactly
 match the current run. This is appropriate for fine-tuning on new images only
-when their LaTeX vocabulary is the same:
+when their LaTeX vocabulary is the same. The example below uses the retained
+legacy dataset and config, not the new v2 dataset:
 
 ```bash
-python -m src.train --config configs/baseline.yaml \
+uv run --frozen --extra cu124 python -m src.train --config configs/baseline.yaml \
   --warm-start checkpoints/baseline.pt \
   --checkpoint checkpoints/runs/formula-warm/best.pt
 ```
@@ -85,7 +147,7 @@ completed epoch and restores optimizer, scheduler, RNG, and data-shuffle
 states. Resume from the `.last.pt` file, not the best-validation checkpoint:
 
 ```bash
-python -m src.train --config configs/baseline.yaml \
+uv run --frozen --extra cu124 python -m src.train --config configs/baseline.yaml \
   --resume checkpoints/runs/formula-warm/best.last.pt \
   --checkpoint checkpoints/runs/formula-warm/best.pt \
   --epochs 120
@@ -102,13 +164,13 @@ warm start by default. `--allow-legacy-preprocessing` opts in explicitly,
 but the image geometry mismatch can hurt results. Changing the tokenizer or
 architecture is not a warm start: train a fresh model instead.
 
-## Local web interface
+## Local web interface and baseline history
 
 Start the local interface after installing the dependencies and making sure
 the checkpoint exists:
 
 ```bash
-python -m src.web_app
+uv run --frozen --extra cpu python -m src.web_app
 ```
 
 Then open <http://127.0.0.1:8000> in a browser, choose a cropped image of one
@@ -118,7 +180,7 @@ a standalone document; PDF compilation is not included yet). To use another
 checkpoint or port:
 
 ```bash
-python -m src.web_app --checkpoint path/to/checkpoint.pt --port 8001
+uv run --frozen --extra cpu python -m src.web_app --checkpoint path/to/checkpoint.pt --port 8001
 ```
 
 The **Модель и результаты** tab shows model settings, validation/test metrics,
@@ -126,12 +188,13 @@ and the train-loss/validation-CER curves. Compute the test results for the
 selected checkpoint once with:
 
 ```bash
-python -m src.evaluate --checkpoint checkpoints/baseline.pt --split test
+uv run --frozen --extra cpu python -m src.evaluate --checkpoint checkpoints/baseline.pt --split test
 ```
 
-New training runs write their per-epoch history to
-`checkpoints/baseline.history.json`; evaluation stores results in
-`checkpoints/baseline.metrics.json`. Restart the web server after replacing a
+Each training run writes history beside its selected checkpoint as
+`best.history.json`; evaluation writes `best.metrics.json`. For the retained
+default UI checkpoint these paths are `baseline.history.json` and
+`baseline.metrics.json`. Restart the web server after replacing a
 checkpoint so prediction uses the new weights. The results tab refreshes its
 metrics and training history while open.
 
@@ -146,7 +209,7 @@ Run evaluation with an explicit metrics name; image paths are relative to the
 JSONL file:
 
 ```bash
-python -m src.evaluate --checkpoint checkpoints/runs/formula-v2/best.pt \
+uv run --frozen --extra cpu python -m src.evaluate --checkpoint checkpoints/runs/formula-v2/best.pt \
   --annotations data/real/val.jsonl --name real_val --device cuda
 ```
 
@@ -163,7 +226,7 @@ page. The interface returns LaTeX source; it does not compile TeX into a PDF.
 ## Tests
 
 ```bash
-pytest -q
+uv run --frozen --extra cpu pytest -q
 ```
 
 ## Limitations

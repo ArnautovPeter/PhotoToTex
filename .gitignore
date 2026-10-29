@@ -17,9 +17,14 @@ ENV/
 # Generated training artifacts
 /data/synthetic/
 /data/formula_synthetic/
+/data/formula_v2/
 /checkpoints/
+/runs/
+*.onnx
 
 # Generated documents and build artifacts
+*.jpg
+*.pt
 *.aux
 *.log
 *.out
@@ -36,3 +41,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+docs/
+/data/

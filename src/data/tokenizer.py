@@ -15,7 +15,9 @@ class LatexTokenizer:
     def __init__(self, vocabulary: Iterable[str] | None = None) -> None:
         chars = sorted(set(vocabulary or []))
         self.tokens = [self.PAD, self.SOS, self.EOS, self.UNK] + [
-            char for char in chars if char not in {self.PAD, self.SOS, self.EOS, self.UNK}
+            char
+            for char in chars
+            if char not in {self.PAD, self.SOS, self.EOS, self.UNK}
         ]
         self.stoi = {token: index for index, token in enumerate(self.tokens)}
         self.itos = {index: token for token, index in self.stoi.items()}
@@ -68,7 +70,9 @@ class LatexTokenizer:
         return tokenizer
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), ensure_ascii=True), encoding="utf-8")
+        Path(path).write_text(
+            json.dumps(self.to_dict(), ensure_ascii=True), encoding="utf-8"
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "LatexTokenizer":

@@ -8,13 +8,26 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageEnhance
 import torch
+from PIL import Image, ImageEnhance
 from torch.utils.data import Dataset
 from torchvision import transforms
-from torchvision.transforms import InterpolationMode, functional as TF
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as TF
 
 from .tokenizer import LatexTokenizer
+
+
+def split_annotation(data_dir: str | Path, split: str) -> Path:
+    """Prefer physically separated v2 splits, while retaining old checkpoint support."""
+    root = Path(data_dir)
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_file() and not json.loads(manifest_path.read_text()).get(
+        "complete", False
+    ):
+        raise ValueError(f"Dataset generation is incomplete: {root}")
+    modern = root / split / "annotations.jsonl"
+    return modern if modern.is_file() else root / f"{split}.jsonl"
 
 
 def image_size_to_hw(image_size: int | list[int] | tuple[int, int]) -> tuple[int, int]:
@@ -23,8 +36,15 @@ def image_size_to_hw(image_size: int | list[int] | tuple[int, int]) -> tuple[int
     elif isinstance(image_size, (list, tuple)) and len(image_size) == 2:
         height, width = image_size
     else:
-        raise ValueError("image_size must be a positive integer or a [height, width] pair")
-    if not isinstance(height, int) or not isinstance(width, int) or height < 1 or width < 1:
+        raise ValueError(
+            "image_size must be a positive integer or a [height, width] pair"
+        )
+    if (
+        not isinstance(height, int)
+        or not isinstance(width, int)
+        or height < 1
+        or width < 1
+    ):
         raise ValueError("image_size dimensions must be positive integers")
     return height, width
 
@@ -42,7 +62,9 @@ def preprocess_image(
         Image.Resampling.LANCZOS,
     )
     canvas = Image.new("RGB", (width, height), "white")
-    canvas.paste(resized, ((width - resized.width) // 2, (height - resized.height) // 2))
+    canvas.paste(
+        resized, ((width - resized.width) // 2, (height - resized.height) // 2)
+    )
     return TF.to_tensor(canvas)
 
 
@@ -62,14 +84,22 @@ def augment_photo(image: Image.Image) -> Image.Image:
     y, x = np.mgrid[0:height, 0:width].astype(np.float32)
     x = x / max(width - 1, 1)
     y = y / max(height - 1, 1)
-    illumination = 1 + random.uniform(-0.18, 0.18) * (x - 0.5) + random.uniform(-0.18, 0.18) * (y - 0.5)
+    illumination = (
+        1
+        + random.uniform(-0.18, 0.18) * (x - 0.5)
+        + random.uniform(-0.18, 0.18) * (y - 0.5)
+    )
     if random.random() < 0.6:
         center_x, center_y = random.random(), random.random()
         radius_x, radius_y = random.uniform(0.18, 0.65), random.uniform(0.2, 0.8)
-        shadow = np.exp(-(((x - center_x) / radius_x) ** 2 + ((y - center_y) / radius_y) ** 2) * 2)
+        shadow = np.exp(
+            -(((x - center_x) / radius_x) ** 2 + ((y - center_y) / radius_y) ** 2) * 2
+        )
         illumination *= 1 - random.uniform(0.08, 0.32) * shadow
     pixels *= illumination[..., None]
-    pixels += np.random.normal(0, random.uniform(0.5, 4.0), pixels.shape).astype(np.float32)
+    pixels += np.random.normal(0, random.uniform(0.5, 4.0), pixels.shape).astype(
+        np.float32
+    )
     image = Image.fromarray(np.uint8(np.clip(pixels, 0, 255)))
 
     if random.random() < 0.25:
@@ -125,7 +155,12 @@ class LatexImageDataset(Dataset[dict[str, Any]]):
                 f"Target in {self.annotation_file} record {record['id']} has {len(target)} "
                 f"tokens, exceeding max_length={self.max_length}; increase max_length."
             )
-        return {"image": image, "tokens": torch.tensor(target, dtype=torch.long), "id": record["id"], "latex": record["latex"]}
+        return {
+            "image": image,
+            "tokens": torch.tensor(target, dtype=torch.long),
+            "id": record["id"],
+            "latex": record["latex"],
+        }
 
 
 def collate_batch(batch: list[dict[str, Any]], pad_id: int) -> dict[str, Any]:
@@ -134,4 +169,9 @@ def collate_batch(batch: list[dict[str, Any]], pad_id: int) -> dict[str, Any]:
     tokens = torch.full((len(batch), max_length), pad_id, dtype=torch.long)
     for row, item in enumerate(batch):
         tokens[row, : item["tokens"].numel()] = item["tokens"]
-    return {"image": images, "tokens": tokens, "id": [x["id"] for x in batch], "latex": [x["latex"] for x in batch]}
+    return {
+        "image": images,
+        "tokens": tokens,
+        "id": [x["id"] for x in batch],
+        "latex": [x["latex"] for x in batch],
+    }

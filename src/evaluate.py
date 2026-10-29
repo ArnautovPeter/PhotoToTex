@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from .data.dataset import LatexImageDataset, collate_batch
+from .data.dataset import LatexImageDataset, collate_batch, split_annotation
 from .infer import load_checkpoint
 from .train import cer, resolve_device, write_json_atomic
 
@@ -27,7 +27,7 @@ def main() -> None:
     del checkpoint
     device = resolve_device(args.device or config.get("device", "cpu"))
     model, tokenizer, config = load_checkpoint(args.checkpoint, device)
-    split_file = Path(args.annotations) if args.annotations else Path(config["data_dir"]) / f"{args.split}.jsonl"
+    split_file = Path(args.annotations) if args.annotations else split_annotation(config["data_dir"], args.split)
     if not split_file.is_file():
         raise FileNotFoundError(f"Evaluation split does not exist: {split_file}")
     dataset = LatexImageDataset(split_file, tokenizer, config["image_size"], config["max_length"])

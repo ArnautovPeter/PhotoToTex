@@ -1,3 +1,4 @@
+# Legacy experiment config; keep for evaluating/resuming pre-v2 runs.
 seed: 42
 device: cuda
 data_dir: data/formula_synthetic
