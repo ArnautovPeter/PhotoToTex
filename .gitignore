@@ -14,6 +14,8 @@ ENV/
 .env.*
 !.env.example
 
+/boxSegmentation/data/*
+
 # Generated training artifacts
 /data/synthetic/
 /data/formula_synthetic/
